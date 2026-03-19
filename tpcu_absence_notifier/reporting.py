@@ -1,6 +1,7 @@
 from collections import Counter
 from datetime import date, datetime
 from pathlib import Path
+import re
 
 import matplotlib
 
@@ -36,10 +37,16 @@ plt.rcParams["font.sans-serif"] = [
 ]
 plt.rcParams["axes.unicode_minus"] = False
 
+DATE_PATTERN = re.compile(r"(\d{2,3})/(\d{1,2})/(\d{1,2})")
+
 
 def parse_roc_date(value: str) -> date | None:
+    match = DATE_PATTERN.search(value.strip())
+    if not match:
+        return None
+
     try:
-        year_str, month_str, day_str = value.split("/")
+        year_str, month_str, day_str = match.groups()
         return date(int(year_str) + 1911, int(month_str), int(day_str))
     except (TypeError, ValueError):
         return None
@@ -74,20 +81,20 @@ def format_type_summary(records: list[AbsenceRecord]) -> str:
 
 
 def summarize_absence(records: list[AbsenceRecord]) -> tuple[list[str], list[str], dict[tuple[str, str], int]]:
-    date_labels: list[str] = []
+    date_labels: set[str] = set()
     type_labels: list[str] = []
     counts: dict[tuple[str, str], int] = {}
 
     for record in records:
-        if record.date not in date_labels:
-            date_labels.append(record.date)
+        date_labels.add(record.date)
         if record.absence_type not in type_labels:
             type_labels.append(record.absence_type)
 
         key = (record.date, record.absence_type)
         counts[key] = counts.get(key, 0) + 1
 
-    return date_labels, type_labels, counts
+    sorted_dates = sorted(date_labels, key=lambda value: parse_roc_date(value) or date.min)
+    return sorted_dates, type_labels, counts
 
 
 def period_sort_key(label: str) -> tuple[int, int, str]:

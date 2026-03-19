@@ -1,6 +1,20 @@
+import re
+
 from bs4 import BeautifulSoup
 
 from .models import AbsenceRecord
+
+
+DATE_PATTERN = re.compile(r"(\d{2,3})/(\d{1,2})/(\d{1,2})")
+
+
+def normalize_roc_date(value: str) -> str:
+    match = DATE_PATTERN.search(value.strip())
+    if not match:
+        return value.strip()
+
+    year_str, month_str, day_str = match.groups()
+    return f"{int(year_str):03d}/{int(month_str):02d}/{int(day_str):02d}"
 
 
 def parse_absence(html: str) -> list[AbsenceRecord]:
@@ -32,7 +46,7 @@ def parse_absence(html: str) -> list[AbsenceRecord]:
             continue
 
         item_no = cols[0]
-        date = cols[1]
+        date = normalize_roc_date(cols[1])
 
         for i in range(2, len(cols)):
             absence_type = cols[i]
