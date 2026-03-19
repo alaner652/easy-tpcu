@@ -1,185 +1,160 @@
-import os
-from datetime import datetime, timedelta
+from argparse import ArgumentParser, Namespace
+from datetime import date, datetime, timedelta
+from pathlib import Path
 
-import requests
-import urllib3
-from bs4 import BeautifulSoup
-from dotenv import load_dotenv
+from tpcu_absence_notifier.client import TPCUClient
+from tpcu_absence_notifier.config import load_settings
+from tpcu_absence_notifier.discord_notifier import send_discord
+from tpcu_absence_notifier.parser import parse_absence
+from tpcu_absence_notifier.reporting import (
+    format_period_label,
+    format_query_window,
+    format_type_summary,
+    generate_absence_chart,
+    generate_period_table_image,
+    sort_absence_records,
+    unique_absence_days,
+)
 
-urllib3.disable_warnings()
+DEFAULT_LOOKBACK_DAYS = 30
 
-load_dotenv()
 
-BASE = "https://siw.tpcu.edu.tw"
-LOGIN_URL = BASE + "/tsint/perchk.jsp"
-ABSENCE_VIEW_URL = BASE + "/tsint/ak_pro/ak002_01.jsp"
+def ensure_output_layout(settings) -> None:
+    for output_path in [
+        settings.debug_output_path,
+        settings.chart_output_path,
+        settings.table_output_path,
+    ]:
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
-UID = os.getenv("TPCU_UID")
-PWD = os.getenv("TPCU_PWD")
-DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK")
-SCHOOL_YEAR_SEMESTER = os.getenv("TPCU_YMS", "114,2")
 
-if not UID or not PWD or not DISCORD_WEBHOOK:
-    raise RuntimeError("請先設定 .env：TPCU_UID / TPCU_PWD / DISCORD_WEBHOOK")
+def parse_cli_date(raw: str) -> date:
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise ValueError(f"日期格式錯誤：{raw}，請使用 YYYY-MM-DD") from exc
 
-session = requests.Session()
 
-def login() -> None:
-    payload = {
-        "hid_type": "S",
-        "uid": UID,
-        "pwd": PWD,
-        "err": "N",
-        "fncid": "",
-        "ls_chochk": "N",
-    }
+def positive_days(raw: str) -> int:
+    value = int(raw)
+    if value <= 0:
+        raise ValueError("--days 必須大於 0")
+    return value
 
-    resp = session.post(LOGIN_URL, data=payload, verify=False, timeout=15)
-    resp.raise_for_status()
 
-    if "無此帳號或密碼" in resp.text:
-        raise RuntimeError("登入失敗：帳號或密碼錯誤")
+def build_parser() -> ArgumentParser:
+    parser = ArgumentParser(description="查詢 TPCU 缺曠 / 請假紀錄並透過 Discord 通知")
+    parser.add_argument("--date", type=parse_cli_date, help="查詢單日資料，格式 YYYY-MM-DD")
+    parser.add_argument("--start-date", type=parse_cli_date, help="查詢起始日，格式 YYYY-MM-DD")
+    parser.add_argument("--end-date", type=parse_cli_date, help="查詢結束日，格式 YYYY-MM-DD")
+    parser.add_argument(
+        "--days",
+        type=positive_days,
+        default=DEFAULT_LOOKBACK_DAYS,
+        help=f"未指定日期時，往前查詢的天數，預設 {DEFAULT_LOOKBACK_DAYS} 天",
+    )
+    return parser
 
-    if "JSESSIONID" not in session.cookies.get_dict():
-        raise RuntimeError("登入失敗：未取得 JSESSIONID")
 
-    print("登入成功")
+def resolve_query_window(parser: ArgumentParser, args: Namespace) -> tuple[date, date]:
+    if args.date and (args.start_date or args.end_date):
+        parser.error("--date 不能和 --start-date / --end-date 同時使用")
 
-def roc_date_parts(dt: datetime) -> tuple[str, str, str, str]:
-    roc_year = str(dt.year - 1911)
-    month = dt.strftime("%m")
-    day = dt.strftime("%d")
-    compact = f"{roc_year}{month}{day}"
-    return roc_year, month, day, compact
+    if args.date:
+        return args.date, args.date
 
-def get_absence_html(days: int = 30) -> str:
-    end_dt = datetime.now()
-    start_dt = end_dt - timedelta(days=days)
+    if args.start_date or args.end_date:
+        start_date = args.start_date or args.end_date
+        end_date = args.end_date or args.start_date
+    else:
+        end_date = datetime.now().date()
+        start_date = end_date - timedelta(days=args.days - 1)
 
-    s_year, s_month, s_day, sdate = roc_date_parts(start_dt)
-    e_year, e_month, e_day, edate = roc_date_parts(end_dt)
+    if start_date > end_date:
+        parser.error("起始日期不能晚於結束日期")
 
-    payload = {
-        "yms": SCHOOL_YEAR_SEMESTER,
-        "leave": "00",
-        "etxt_syear": s_year,
-        "etxt_smonth": s_month,
-        "etxt_sday": s_day,
-        "etxt_eyear": e_year,
-        "etxt_emonth": e_month,
-        "etxt_eday": e_day,
-        "spath": "",
-        "sdate": sdate,
-        "edate": edate,
-    }
+    return start_date, end_date
 
-    resp = session.post(ABSENCE_VIEW_URL, data=payload, verify=False, timeout=20)
-    resp.raise_for_status()
 
-    if "學生個人缺曠請假明細表" not in resp.text:
-        with open("absence_debug.html", "w", encoding="utf-8") as f:
-            f.write(resp.text)
-        raise RuntimeError("查詢失敗：回應不是缺曠表，已輸出 absence_debug.html")
+def build_discord_fields(records, start_date: date, end_date: date) -> list[dict[str, object]]:
+    fields: list[dict[str, object]] = [
+        {"name": "查詢區間", "value": format_query_window(start_date, end_date), "inline": False},
+    ]
 
-    return resp.text
-
-def parse_absence(html: str) -> list[dict[str, str]]:
-    soup = BeautifulSoup(html, "html.parser")
-
-    target_table = None
-    for table in soup.find_all("table"):
-        text = table.get_text(" ", strip=True)
-        if "項次" in text and "日期" in text and "朝會" in text:
-            target_table = table
-            break
-
-    if target_table is None:
-        return []
-
-    rows = target_table.find_all("tr")
-    if len(rows) < 2:
-        return []
-
-    header_cells = [td.get_text(strip=True) for td in rows[0].find_all("td")]
-    if len(header_cells) < 3:
-        return []
-
-    records: list[dict[str, str]] = []
-
-    for row in rows[1:]:
-        cols = [td.get_text(strip=True).replace("\xa0", "") for td in row.find_all("td")]
-        if len(cols) != len(header_cells):
-            continue
-
-        item_no = cols[0]
-        date = cols[1]
-
-        for i in range(2, len(cols)):
-            val = cols[i]
-            if val:
-                records.append(
-                    {
-                        "item": item_no,
-                        "date": date,
-                        "period": header_cells[i],
-                        "type": val,
-                    }
-                )
-
-    return records
-
-def build_discord_message(records: list[dict[str, str]], days: int = 30) -> str:
-    title = f"最近 {days} 天缺曠 / 請假紀錄"
     if not records:
-        return f"{title}\n\n沒有紀錄"
+        fields.append({"name": "查詢結果", "value": "本次區間沒有缺曠 / 請假紀錄", "inline": False})
+        return fields
 
-    lines = [title, ""]
-    for r in records:
-        lines.append(f"{r['date']} 第{r['period']}節 - {r['type']}")
+    fields.append(
+        {
+            "name": "統計摘要",
+            "value": f"{len(records)} 節 / {unique_absence_days(records)} 天",
+            "inline": True,
+        }
+    )
+    fields.append({"name": "類型統計", "value": format_type_summary(records), "inline": False})
 
-    content = "\n".join(lines)
+    return fields
 
-    if len(content) <= 1900:
-        return content
 
-    trimmed = [title, ""]
-    total = len("\n".join(trimmed))
-    for line in lines[2:]:
-        if total + len(line) + 1 > 1800:
-            trimmed.append("...")
-            break
-        trimmed.append(line)
-        total += len(line) + 1
+def build_discord_description(records) -> str:
+    if not records:
+        return "本次查詢完成，無缺曠 / 請假紀錄。"
+    return f"本次查詢完成，共 {len(records)} 節，分布於 {unique_absence_days(records)} 天。詳情請見附圖。"
 
-    return "\n".join(trimmed)
-
-def send_discord(records: list[dict[str, str]], days: int = 30) -> None:
-    content = build_discord_message(records, days=days)
-
-    payload = {"content": content}
-    resp = requests.post(DISCORD_WEBHOOK, json=payload, timeout=10)
-    if resp.status_code not in (200, 204):
-        raise RuntimeError(f"Discord webhook 失敗：{resp.status_code} {resp.text}")
-
-    print("Discord 已通知")
 
 def main() -> None:
-    days = 30
+    parser = build_parser()
+    args = parser.parse_args()
+    start_date, end_date = resolve_query_window(parser, args)
+    settings = load_settings()
+    ensure_output_layout(settings)
+    client = TPCUClient(settings)
 
-    login()
+    client.login()
+    print("登入成功")
+    print(f"查詢區間：{format_query_window(start_date, end_date)}")
 
-    html = get_absence_html(days=days)
+    html = client.get_absence_html(start_date=start_date, end_date=end_date)
 
-    with open("absence_debug.html", "w", encoding="utf-8") as f:
-        f.write(html)
+    with open(settings.debug_output_path, "w", encoding="utf-8") as file_handle:
+        file_handle.write(html)
 
-    records = parse_absence(html)
+    if "學生個人缺曠請假明細表" not in html:
+        raise RuntimeError(f"查詢失敗：回應不是缺曠表，已輸出 {settings.debug_output_path}")
+
+    records = sort_absence_records(parse_absence(html))
 
     print(f"找到 {len(records)} 筆節次紀錄")
-    for r in records[:10]:
-        print(f"{r['date']} 第{r['period']}節 - {r['type']}")
+    for record in records[:10]:
+        print(f"{record.date} {format_period_label(record.period)} - {record.absence_type}")
 
-    send_discord(records, days=days)
+    chart_path = generate_absence_chart(
+        records,
+        start_date=start_date,
+        end_date=end_date,
+        output_path=settings.chart_output_path,
+        title="缺曠 / 請假總覽",
+    )
+    table_path = generate_period_table_image(
+        records,
+        start_date=start_date,
+        end_date=end_date,
+        output_path=settings.table_output_path,
+        title="節次明細表",
+    )
+    print(f"已輸出圖表：{chart_path}")
+    print(f"已輸出節次表格：{table_path}")
+
+    send_discord(
+        settings.discord_webhook,
+        title="TPCU 缺曠 / 請假查詢",
+        description=build_discord_description(records),
+        fields=build_discord_fields(records, start_date, end_date),
+        image_paths=[chart_path, table_path],
+    )
+    print(f"Discord 已通知：{format_query_window(start_date, end_date)}")
+
 
 if __name__ == "__main__":
     main()

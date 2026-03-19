@@ -1,3 +1,10 @@
 .env
 venv/
 __pycache__/
+outputs/
+absence_debug.html
+absence_chart.png
+absence_period_table.png
+absence_history.db
+test_absence_chart.png
+test_absence_period_table.png
