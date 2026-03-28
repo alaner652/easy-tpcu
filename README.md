@@ -2,7 +2,7 @@
 
 `easy-tpcu` 是一個用 Python 撰寫的自動化工具，用於登入臺北城市科技大學校務系統，依指定日期區間查詢缺曠 / 請假紀錄，解析回傳的 HTML 表格，並透過 Discord Webhook 發送即時通知。
 
-這個工具的目標很單純：直接打 API 查詢、整理成清楚的摘要與表格，再送到 Discord。這版不再依賴 SQLite 歷史資料庫，比對新舊紀錄也不再是核心。
+這個工具的目標很單純：直接打 API 查詢、整理成清楚的摘要與表格，再送到 Discord。
 
 ## 功能
 
@@ -13,27 +13,6 @@
 - 產生現代化、簡潔的節次表格
 - 每次查詢都將摘要與圖片發送到 Discord Webhook
 - 將查詢結果輸出為 `absence_debug.html` 便於除錯
-
-## 流程圖
-
-```mermaid
-flowchart TD
-    A[執行 bot.py] --> B[讀取 .env]
-    A --> A1[解析 CLI 日期參數]
-    B --> C[POST /tsint/perchk.jsp]
-    C --> D{是否登入成功}
-    D -- 否 --> E[登入失敗並拋出例外]
-    D -- 是 --> F[計算指定日期區間]
-    F --> G[POST /tsint/ak_pro/ak002_01.jsp]
-    G --> H{回應是否為缺曠表}
-    H -- 否 --> I[輸出 absence_debug.html 並拋出例外]
-    H -- 是 --> J[解析 HTML table]
-    J --> K[產生 absence_chart.png]
-    K --> L[產生 absence_period_table.png]
-    L --> M[建立 Discord 摘要與圖片 payload]
-    M --> N[送出 Discord Webhook]
-    N --> O[完成通知]
-```
 
 ## 技術
 
@@ -46,22 +25,6 @@ flowchart TD
 ## 專案結構
 
 ```text
-.
-├── bot.py
-├── outputs/
-│   ├── charts/
-│   └── debug/
-├── README.md
-├── requirements.txt
-└── tpcu_absence_notifier/
-    ├── client.py
-    ├── config.py
-    ├── discord_notifier.py
-    ├── models.py
-    ├── parser.py
-    └── reporting.py
-```
-
 - `bot.py`：程式入口，負責串接整體流程
 - `outputs/`：所有自動產生的輸出檔
 - `tpcu_absence_notifier/config.py`：讀取 `.env` 與設定
@@ -173,3 +136,6 @@ python bot.py --end-date 2026-03-19
 - 本工具依賴校務系統目前的頁面流程與欄位名稱，若校方修改系統，程式可能需要同步調整
 - 請妥善保管 `.env` 中的帳號、密碼與 Webhook
 - 請僅在合法且經授權的情境下進行測試與使用
+
+免責聲明： 本專案僅供學術研究與個人自動化工具開發練習使用。
+請勿用於非法用途，開發者不承擔任何因不當使用導致的法律責任。
