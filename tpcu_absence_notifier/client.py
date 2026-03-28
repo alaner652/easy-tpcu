@@ -16,6 +16,23 @@ def roc_date_parts(dt: date) -> tuple[str, str, str, str]:
     return roc_year, month, day, compact
 
 
+def normalize_period_key(label: str) -> str:
+    return label.replace("第", "").replace("節", "").strip()
+
+
+def build_lea_value(
+    compact_date: str,
+    period_order: tuple[str, ...],
+    target_periods: set[str],
+    leave_type_id: str,
+) -> str:
+    values: list[str] = []
+    for label in period_order:
+        key = normalize_period_key(label)
+        values.append(leave_type_id if key in target_periods else "0")
+    return f"{compact_date}%{'%'.join(values)}%"
+
+
 class TPCUClient:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -64,4 +81,42 @@ class TPCUClient:
         resp = self.session.post(self.settings.absence_view_url, data=payload, verify=False, timeout=20)
         resp.raise_for_status()
 
+        return resp.text
+
+    def submit_leave(self, target_date: date, target_periods: set[str]) -> str:
+        leave_type_id = self.settings.leave_type_id
+        leave_type_name = self.settings.leave_type_name
+        leave_reason = self.settings.leave_reason
+        period_order = self.settings.leave_period_order
+
+        if not leave_type_id or not leave_type_name or not leave_reason:
+            raise RuntimeError(
+                "自動請假需要設定 .env：TPCU_LEAVE_ID / TPCU_LEAVE_NAME / TPCU_LEAVE_REASON"
+            )
+        if not period_order:
+            raise RuntimeError("自動請假需要設定 .env：TPCU_LEAVE_PERIODS")
+
+        _, _, _, compact = roc_date_parts(target_date)
+        lea_value = build_lea_value(compact, period_order, target_periods, leave_type_id)
+
+        payload = {
+            "rdo1": f"{leave_type_id}#{leave_type_name}",
+            "std_reason": leave_reason,
+            "ls_date1": compact,
+            "leaveid": leave_type_id,
+            "leavename": leave_type_name,
+            "lea_value": lea_value,
+            "ls_chk": "Y",
+            "todo": "upload",
+        }
+        files = {"uploadfile": ("", b"", "application/octet-stream")}
+
+        resp = self.session.post(
+            self.settings.leave_apply_url,
+            data=payload,
+            files=files,
+            verify=False,
+            timeout=20,
+        )
+        resp.raise_for_status()
         return resp.text
