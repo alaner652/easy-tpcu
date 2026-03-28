@@ -82,8 +82,10 @@ def run_check_sync(
     auto_leave: bool,
     dry_run: bool,
     force: bool,
+    uid: str,
+    pwd: str,
 ) -> tuple[object, list, list[str]]:
-    settings = load_settings(require_webhook=False)
+    settings = load_settings(require_webhook=False, uid_override=uid, pwd_override=pwd)
     ensure_output_layout(settings)
     client = TPCUClient(settings)
     client.login()
@@ -158,6 +160,8 @@ bot = TPCUBot()
 
 @bot.tree.command(name="check", description="查詢缺曠 / 請假紀錄")
 @app_commands.describe(
+    uid="你的學號",
+    pwd="你的密碼",
     date="查詢單日（YYYY-MM-DD）",
     start_date="起始日（YYYY-MM-DD）",
     end_date="結束日（YYYY-MM-DD）",
@@ -165,12 +169,14 @@ bot = TPCUBot()
 )
 async def check(
     interaction: discord.Interaction,
+    uid: str,
+    pwd: str,
     date: str | None = None,
     start_date: str | None = None,
     end_date: str | None = None,
     days: int = DEFAULT_LOOKBACK_DAYS,
 ) -> None:
-    await interaction.response.defer(thinking=True)
+    await interaction.response.defer(thinking=True, ephemeral=True)
     try:
         start, end = resolve_query_window(
             single_date=date,
@@ -190,6 +196,8 @@ async def check(
             auto_leave=False,
             dry_run=False,
             force=False,
+            uid=uid,
+            pwd=pwd,
         )
     except Exception as exc:
         await interaction.followup.send(f"查詢失敗：{exc}", ephemeral=True)
@@ -202,11 +210,13 @@ async def check(
         chart_path=result.chart_path,
         table_path=result.table_path,
     )
-    await interaction.followup.send(embeds=embeds, files=files)
+    await interaction.followup.send(embeds=embeds, files=files, ephemeral=True)
 
 
 @bot.tree.command(name="auto_leave", description="查詢缺曠並自動送出請假")
 @app_commands.describe(
+    uid="你的學號",
+    pwd="你的密碼",
     date="查詢單日（YYYY-MM-DD）",
     start_date="起始日（YYYY-MM-DD）",
     end_date="結束日（YYYY-MM-DD）",
@@ -216,6 +226,8 @@ async def check(
 )
 async def auto_leave(
     interaction: discord.Interaction,
+    uid: str,
+    pwd: str,
     date: str | None = None,
     start_date: str | None = None,
     end_date: str | None = None,
@@ -223,7 +235,7 @@ async def auto_leave(
     dry_run: bool = False,
     force: bool = False,
 ) -> None:
-    await interaction.response.defer(thinking=True)
+    await interaction.response.defer(thinking=True, ephemeral=True)
     try:
         start, end = resolve_query_window(
             single_date=date,
@@ -243,6 +255,8 @@ async def auto_leave(
             auto_leave=True,
             dry_run=dry_run,
             force=force,
+            uid=uid,
+            pwd=pwd,
         )
     except Exception as exc:
         await interaction.followup.send(f"查詢失敗：{exc}", ephemeral=True)
@@ -257,7 +271,7 @@ async def auto_leave(
         table_path=result.table_path,
         auto_leave_summary=auto_leave_summary,
     )
-    await interaction.followup.send(embeds=embeds, files=files)
+    await interaction.followup.send(embeds=embeds, files=files, ephemeral=True)
 
 
 def main() -> None:

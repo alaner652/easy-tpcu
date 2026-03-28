@@ -28,6 +28,8 @@ def positive_days(raw: str) -> int:
 
 def build_parser() -> ArgumentParser:
     parser = ArgumentParser(description="查詢 TPCU 缺曠 / 請假紀錄並透過 Discord 通知")
+    parser.add_argument("--uid", help="覆寫 .env 的帳號（TPCU_UID）")
+    parser.add_argument("--pwd", help="覆寫 .env 的密碼（TPCU_PWD）")
     parser.add_argument("--date", type=parse_cli_date, help="查詢單日資料，格式 YYYY-MM-DD")
     parser.add_argument("--start-date", type=parse_cli_date, help="查詢起始日，格式 YYYY-MM-DD")
     parser.add_argument("--end-date", type=parse_cli_date, help="查詢結束日，格式 YYYY-MM-DD")
@@ -78,10 +80,12 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     start_date, end_date = resolve_query_window(parser, args)
+    if (args.uid and not args.pwd) or (args.pwd and not args.uid):
+        parser.error("--uid 與 --pwd 需同時提供")
     auto_leave = args.auto_leave or args.auto_leave_dry_run
     dry_run = args.auto_leave_dry_run
     force_leave = args.auto_leave_force
-    settings = load_settings()
+    settings = load_settings(uid_override=args.uid, pwd_override=args.pwd)
     ensure_output_layout(settings)
     client = TPCUClient(settings)
 

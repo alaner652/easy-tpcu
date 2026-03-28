@@ -54,11 +54,16 @@ class Settings:
         return str(Path(self.output_dir) / "charts" / "absence_period_table.png")
 
 
-def load_settings(*, require_webhook: bool = True) -> Settings:
+def load_settings(
+    *,
+    require_webhook: bool = True,
+    uid_override: str | None = None,
+    pwd_override: str | None = None,
+) -> Settings:
     load_dotenv()
 
-    uid = os.getenv("TPCU_UID")
-    pwd = os.getenv("TPCU_PWD")
+    uid = uid_override or os.getenv("TPCU_UID")
+    pwd = pwd_override or os.getenv("TPCU_PWD")
     discord_webhook = os.getenv("DISCORD_WEBHOOK")
     school_year_semester = os.getenv("TPCU_YMS", "114,2")
     output_dir = os.getenv("TPCU_OUTPUT_DIR", "outputs")
